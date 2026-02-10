@@ -1,0 +1,7 @@
+# MM-UAVBench 图像任务评测（多模型 × 多任务）
+torch
+torchvision
+transformers
+accelerate
+huggingface_hub
+pillow

@@ -1,0 +1,74 @@
+======================================================================
+MM-UAVBench 图像任务评测报告（多模型 × 多任务，零样本 MCQ）
+======================================================================
+生成时间: 2026-02-10 09:59:35
+设备: cuda
+每任务样本数: 全部
+任务数: 16
+模型数: 2
+
+----------------------------------------------------------------------
+模型: clip_vitb32  (CLIP ViT-B/32 (openai))
+----------------------------------------------------------------------
+  [Scene_Classification] 正确: 98/239  准确率: 41.0%
+  [Orientation_Classification] 正确: 123/739  准确率: 16.6%
+  [Environment_State_Classification] 正确: 219/323  准确率: 67.8%
+  [Urban_OCR] 正确: 77/320  准确率: 24.1%
+  [Class_Agnostic_Counting] 正确: 78/330  准确率: 23.6%
+  [Referring_Expression_Counting] 正确: 56/350  准确率: 16.0%
+  [Target_Backtracking] 正确: 27/118  准确率: 22.9%
+  [Cross_Object_Reasoning] 正确: 42/172  准确率: 24.4%
+  [Intent_Analysis_and_Prediction] 正确: 87/310  准确率: 28.1%
+  [Scene_Attribute_Understanding] 正确: 117/277  准确率: 42.2%
+  [Scene_Damage_Assessment] 正确: 70/350  准确率: 20.0%
+  [Scene_Analysis_and_Prediction] 正确: 51/207  准确率: 24.6%
+  [Temporal_Ordering] 正确: 70/350  准确率: 20.0%
+  [Ground_Target_Planning] 正确: 88/325  准确率: 27.1%
+  [Air_Ground_Collaborative_Planning] 正确: 52/208  准确率: 25.0%
+  [Swarm_Collaborative_Planning] 正确: 102/293  准确率: 34.8%
+  >> 总体: 1357/4911  平均准确率: 27.6%
+
+----------------------------------------------------------------------
+模型: clip_vitl14  (CLIP ViT-L/14 (openai))
+----------------------------------------------------------------------
+  [Scene_Classification] 正确: 113/239  准确率: 47.3%
+  [Orientation_Classification] 正确: 128/739  准确率: 17.3%
+  [Environment_State_Classification] 正确: 219/323  准确率: 67.8%
+  [Urban_OCR] 正确: 86/320  准确率: 26.9%
+  [Class_Agnostic_Counting] 正确: 47/330  准确率: 14.2%
+  [Referring_Expression_Counting] 正确: 49/350  准确率: 14.0%
+  [Target_Backtracking] 正确: 20/118  准确率: 16.9%
+  [Cross_Object_Reasoning] 正确: 33/172  准确率: 19.2%
+  [Intent_Analysis_and_Prediction] 正确: 98/310  准确率: 31.6%
+  [Scene_Attribute_Understanding] 正确: 119/277  准确率: 43.0%
+  [Scene_Damage_Assessment] 正确: 85/350  准确率: 24.3%
+  [Scene_Analysis_and_Prediction] 正确: 50/207  准确率: 24.2%
+  [Temporal_Ordering] 正确: 77/350  准确率: 22.0%
+  [Ground_Target_Planning] 正确: 90/325  准确率: 27.7%
+  [Air_Ground_Collaborative_Planning] 正确: 50/208  准确率: 24.0%
+  [Swarm_Collaborative_Planning] 正确: 100/293  准确率: 34.1%
+  >> 总体: 1364/4911  平均准确率: 27.8%
+
+======================================================================
+汇总表（各任务 × 各模型 准确率%）
+======================================================================
+Task                                  clip_vitb32     clip_vitl14   
+Scene_Classification                           41.0%           47.3%
+Orientation_Classification                     16.6%           17.3%
+Environment_State_Classification               67.8%           67.8%
+Urban_OCR                                      24.1%           26.9%
+Class_Agnostic_Counting                        23.6%           14.2%
+Referring_Expression_Counting                  16.0%           14.0%
+Target_Backtracking                            22.9%           16.9%
+Cross_Object_Reasoning                         24.4%           19.2%
+Intent_Analysis_and_Prediction                 28.1%           31.6%
+Scene_Attribute_Understanding                  42.2%           43.0%
+Scene_Damage_Assessment                        20.0%           24.3%
+Scene_Analysis_and_Prediction                  24.6%           24.2%
+Temporal_Ordering                              20.0%           22.0%
+Ground_Target_Planning                         27.1%           27.7%
+Air_Ground_Collaborative_Planning              25.0%           24.0%
+Swarm_Collaborative_Planning                   34.8%           34.1%
+总体                                             27.6%           27.8%
+
+======================================================================

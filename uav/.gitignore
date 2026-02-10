@@ -1,0 +1,22 @@
+# 数据集缓存（路径过长且可从 HF 自动下载，不提交）
+data/
+mm_uavbench_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# 本地/敏感
+.env
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
