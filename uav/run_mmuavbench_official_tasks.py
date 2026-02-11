@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import random
 import re
 import subprocess
 import sys
@@ -136,7 +137,7 @@ RESULTS_DIR = os.path.join(SCRIPT_DIR, "results")
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# 官方全部图像任务
+# 官方 16 个图像任务（与 HF daisq/MM-UAVBench 一致）
 IMAGE_TASKS = [
     "Scene_Classification",
     "Orientation_Classification",
@@ -155,14 +156,24 @@ IMAGE_TASKS = [
     "Air_Ground_Collaborative_Planning",
     "Swarm_Collaborative_Planning",
 ]
+# 官方 3 个视频任务（Event_*），需多帧/视频输入，当前脚本仅支持图像
+EVENT_TASKS = [
+    "Event_Prediction",
+    "Event_Tracing",
+    "Event_Understanding",
+]
+# 全部 19 任务（16 图像 + 3 视频），--tasks 可显式指定 EVENT 时需后续支持视频
+ALL_TASKS = IMAGE_TASKS + EVENT_TASKS
 
 # 可用模型：id -> display_name
 AVAILABLE_MODELS = {
+    "random_baseline": "Random baseline (uniform choice)",
     "clip_vitb32": "CLIP ViT-B/32 (openai)",
     "siglip_base": "SigLIP Base 224 (google)",
     "clip_vitl14": "CLIP ViT-L/14 (openai)",
     "qwen2vl_2b": "Qwen2-VL-2B-Instruct (Qwen)",
     "qwen2vl_7b": "Qwen2-VL-7B-Instruct (Qwen)",
+    "qwen3vl_8b": "Qwen3-VL-8B-Instruct (Qwen)",
 }
 
 
@@ -209,6 +220,26 @@ def normalize_answer(s: str) -> str:
 
 
 # --------------- 多模型：统一接口 predict(image_path, options) -> str ---------------
+
+
+def _make_random_baseline_runner():
+    """随机 baseline：在选项字母中均匀随机选择，可复现（固定种子）。"""
+    rng = random.Random(42)
+
+    def predict(image_path: str, options: dict) -> str:
+        letters, _ = options_to_ordered_list(options)
+        if not letters:
+            return ""
+        return rng.choice(letters)
+
+    def predict_batch(batch: list[tuple[str, dict]], preloaded_images: list | None = None) -> list[str]:
+        out = []
+        for _path, options in batch:
+            letters, _ = options_to_ordered_list(options)
+            out.append(rng.choice(letters) if letters else "")
+        return out
+
+    return predict, predict_batch
 
 
 def _make_clip_runner(device: str, model_id: str):
@@ -427,8 +458,83 @@ def _make_qwen2vl_runner(device: str, size: str):
     return predict
 
 
+def _make_qwen3vl_runner(device: str):
+    """Qwen3-VL-8B 生成式 MCQ，与 Qwen2-VL 相同 prompt/解析。需约 18GB 显存。"""
+    from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+
+    model_name = "Qwen/Qwen3-VL-8B-Instruct"
+    is_cpu = device == "cpu"
+    model = Qwen3VLForConditionalGeneration.from_pretrained(
+        model_name,
+        torch_dtype=getattr(torch, "bfloat16", torch.float16) if not is_cpu else torch.float32,
+        device_map="auto" if not is_cpu else None,
+        low_cpu_mem_usage=is_cpu,
+        attn_implementation="sdpa",
+    )
+    if is_cpu:
+        model = model.to("cpu")
+    processor = AutoProcessor.from_pretrained(model_name)
+    try:
+        processor.image_processor.min_pixels = 56 * 56
+        processor.image_processor.max_pixels = (336 * 336) if is_cpu else (512 * 512)
+    except Exception:
+        pass
+
+    def predict(image_path: str, options: dict) -> str:
+        letters, texts = options_to_ordered_list(options)
+        if not letters or not texts:
+            return ""
+        opt_lines = "\n".join(f"{letters[i]}. {texts[i]}" for i in range(len(letters)))
+        prompt = (
+            "You are an expert in drone and aerial image analysis. "
+            "Answer the following multiple-choice question based on the image. "
+            "Reply with ONLY one letter: A, B, C, or D.\n\n"
+            f"Question: Based on the image, choose the correct option.\n\n"
+            f"Options:\n{opt_lines}\n\nAnswer:"
+        )
+        img_ref = os.path.abspath(image_path).replace("\\", "/")
+        if not img_ref.startswith("file://"):
+            img_ref = "file:///" + img_ref
+        conversation = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": img_ref},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+        try:
+            inputs = processor.apply_chat_template(
+                conversation,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+            inputs.pop("token_type_ids", None)
+            if device == "cuda":
+                inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+            else:
+                inputs = {k: v.to("cpu") if hasattr(v, "to") else v for k, v in inputs.items()}
+            max_tokens = 16 if device == "cpu" else 32
+            with torch.inference_mode():
+                out_ids = model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
+            input_len = inputs["input_ids"].shape[1]
+            gen_ids = out_ids[:, input_len:]
+            output_text = processor.batch_decode(gen_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+            pred = _parse_mcq_letter(output_text[0] if output_text else "")
+            return pred if pred in letters else (letters[0] if letters else "")
+        except Exception:
+            return letters[0] if letters else ""
+
+    return predict
+
+
 def get_runner(model_id: str, device: str) -> tuple:
     """返回 (predict_fn, predict_batch_fn)。predict_batch_fn 为 None 表示不支持批量推理。"""
+    if model_id == "random_baseline":
+        return _make_random_baseline_runner()
     if model_id in ("clip_vitb32", "clip_vitl14"):
         return _make_clip_runner(device, model_id)
     if model_id == "siglip_base":
@@ -437,6 +543,8 @@ def get_runner(model_id: str, device: str) -> tuple:
         return _make_qwen2vl_runner(device, "2b"), None
     if model_id == "qwen2vl_7b":
         return _make_qwen2vl_runner(device, "7b"), None
+    if model_id == "qwen3vl_8b":
+        return _make_qwen3vl_runner(device), None
     raise ValueError(f"未知模型: {model_id}，可选: {list(AVAILABLE_MODELS.keys())}")
 
 
@@ -632,7 +740,7 @@ def cmd_check_hardware() -> int:
         elif vram < 16:
             print("  - VRAM 8–16GB，可跑 qwen2vl_2b；qwen2vl_7b 建议先小样本试跑")
         else:
-            print("  - VRAM >= 16GB，可跑全部模型（含 qwen2vl_7b）")
+            print("  - VRAM >= 16GB，可跑 qwen2vl_7b；qwen3vl_8b 建议 18GB+")
     print("=" * 50)
     return 0
 

@@ -1,11 +1,32 @@
 ======================================================================
 MM-UAVBench 图像任务评测报告（多模型 × 多任务，零样本 MCQ）
 ======================================================================
-生成时间: 2026-02-10 09:59:35
+生成时间: 2026-02-11 08:11:26
 设备: cuda
 每任务样本数: 全部
 任务数: 16
-模型数: 2
+模型数: 4
+
+----------------------------------------------------------------------
+模型: random_baseline  (Random baseline (uniform choice))
+----------------------------------------------------------------------
+  [Scene_Classification] 正确: 64/239  准确率: 26.8%
+  [Orientation_Classification] 正确: 176/739  准确率: 23.8%
+  [Environment_State_Classification] 正确: 82/323  准确率: 25.4%
+  [Urban_OCR] 正确: 87/320  准确率: 27.2%
+  [Class_Agnostic_Counting] 正确: 70/330  准确率: 21.2%
+  [Referring_Expression_Counting] 正确: 59/350  准确率: 16.9%
+  [Target_Backtracking] 正确: 33/118  准确率: 28.0%
+  [Cross_Object_Reasoning] 正确: 52/172  准确率: 30.2%
+  [Intent_Analysis_and_Prediction] 正确: 83/310  准确率: 26.8%
+  [Scene_Attribute_Understanding] 正确: 81/277  准确率: 29.2%
+  [Scene_Damage_Assessment] 正确: 70/350  准确率: 20.0%
+  [Scene_Analysis_and_Prediction] 正确: 61/207  准确率: 29.5%
+  [Temporal_Ordering] 正确: 100/350  准确率: 28.6%
+  [Ground_Target_Planning] 正确: 71/325  准确率: 21.8%
+  [Air_Ground_Collaborative_Planning] 正确: 49/208  准确率: 23.6%
+  [Swarm_Collaborative_Planning] 正确: 79/293  准确率: 27.0%
+  >> 总体: 1217/4911  平均准确率: 24.8%
 
 ----------------------------------------------------------------------
 模型: clip_vitb32  (CLIP ViT-B/32 (openai))
@@ -49,26 +70,47 @@ MM-UAVBench 图像任务评测报告（多模型 × 多任务，零样本 MCQ）
   [Swarm_Collaborative_Planning] 正确: 100/293  准确率: 34.1%
   >> 总体: 1364/4911  平均准确率: 27.8%
 
+----------------------------------------------------------------------
+模型: qwen2vl_2b  (Qwen2-VL-2B-Instruct (Qwen))
+----------------------------------------------------------------------
+  [Scene_Classification] 正确: 143/239  准确率: 59.8%
+  [Orientation_Classification] 正确: 133/739  准确率: 18.0%
+  [Environment_State_Classification] 正确: 218/323  准确率: 67.5%
+  [Urban_OCR] 正确: 136/320  准确率: 42.5%
+  [Class_Agnostic_Counting] 正确: 71/330  准确率: 21.5%
+  [Referring_Expression_Counting] 正确: 82/350  准确率: 23.4%
+  [Target_Backtracking] 正确: 51/118  准确率: 43.2%
+  [Cross_Object_Reasoning] 正确: 82/172  准确率: 47.7%
+  [Intent_Analysis_and_Prediction] 正确: 143/310  准确率: 46.1%
+  [Scene_Attribute_Understanding] 正确: 142/277  准确率: 51.3%
+  [Scene_Damage_Assessment] 正确: 101/350  准确率: 28.9%
+  [Scene_Analysis_and_Prediction] 正确: 73/207  准确率: 35.3%
+  [Temporal_Ordering] 正确: 106/350  准确率: 30.3%
+  [Ground_Target_Planning] 正确: 118/325  准确率: 36.3%
+  [Air_Ground_Collaborative_Planning] 正确: 69/208  准确率: 33.2%
+  [Swarm_Collaborative_Planning] 正确: 70/293  准确率: 23.9%
+  >> 总体: 1738/4911  平均准确率: 35.4%
+
 ======================================================================
 汇总表（各任务 × 各模型 准确率%）
 ======================================================================
-Task                                  clip_vitb32     clip_vitl14   
-Scene_Classification                           41.0%           47.3%
-Orientation_Classification                     16.6%           17.3%
-Environment_State_Classification               67.8%           67.8%
-Urban_OCR                                      24.1%           26.9%
-Class_Agnostic_Counting                        23.6%           14.2%
-Referring_Expression_Counting                  16.0%           14.0%
-Target_Backtracking                            22.9%           16.9%
-Cross_Object_Reasoning                         24.4%           19.2%
-Intent_Analysis_and_Prediction                 28.1%           31.6%
-Scene_Attribute_Understanding                  42.2%           43.0%
-Scene_Damage_Assessment                        20.0%           24.3%
-Scene_Analysis_and_Prediction                  24.6%           24.2%
-Temporal_Ordering                              20.0%           22.0%
-Ground_Target_Planning                         27.1%           27.7%
-Air_Ground_Collaborative_Planning              25.0%           24.0%
-Swarm_Collaborative_Planning                   34.8%           34.1%
-总体                                             27.6%           27.8%
+Task                                  random_baseline  clip_vitb32     clip_vitl14     qwen2vl_2b    
+Scene_Classification                           26.8%           41.0%           47.3%           59.8%
+Orientation_Classification                     23.8%           16.6%           17.3%           18.0%
+Environment_State_Classification               25.4%           67.8%           67.8%           67.5%
+Urban_OCR                                      27.2%           24.1%           26.9%           42.5%
+Class_Agnostic_Counting                        21.2%           23.6%           14.2%           21.5%
+Referring_Expression_Counting                  16.9%           16.0%           14.0%           23.4%
+Target_Backtracking                            28.0%           22.9%           16.9%           43.2%
+Cross_Object_Reasoning                         30.2%           24.4%           19.2%           47.7%
+Intent_Analysis_and_Prediction                 26.8%           28.1%           31.6%           46.1%
+Scene_Attribute_Understanding                  29.2%           42.2%           43.0%           51.3%
+Scene_Damage_Assessment                        20.0%           20.0%           24.3%           28.9%
+Scene_Analysis_and_Prediction                  29.5%           24.6%           24.2%           35.3%
+Temporal_Ordering                              28.6%           20.0%           22.0%           30.3%
+Ground_Target_Planning                         21.8%           27.1%           27.7%           36.3%
+Air_Ground_Collaborative_Planning              23.6%           25.0%           24.0%           33.2%
+Swarm_Collaborative_Planning                   27.0%           34.8%           34.1%           23.9%
+总体                                             24.8%           27.6%           27.8%           35.4%
 
 ======================================================================
