@@ -2,14 +2,14 @@
 
 基于 [daisq/MM-UAVBench](https://huggingface.co/datasets/daisq/MM-UAVBench) 数据，本地跑 16 个图像任务的零样本 MCQ，多模型输出 txt 报告。支持随机基线、CLIP、Qwen2-VL 等，AMD 显卡用 ROCm。
 
-## 实验结果（4 模型）
+## Results (4 models)
 
 - **设备**：cuda（AMD RX 7700 XT）
 - **题目**：16 任务、全量 4911 题
 - **模型与总体准确率**：
 
-| 模型 | 总体准确率 |
-|------|------------|
+| Model | Overall accuracy |
+|-------|------------------|
 | random_baseline | 24.8% |
 | clip_vitb32 | 27.6% |
 | clip_vitl14 | 27.8% |
@@ -17,7 +17,7 @@
 
 完整每任务数字见 `results/MM-UAVBench_report.txt`。任务说明见 `docs/任务与方法说明.md`。
 
-## 怎么跑
+## How to run
 
 ```bash
 pip install -r requirements.txt
@@ -26,12 +26,12 @@ pip install -r requirements.txt
 
 | 操作 | 命令 |
 |------|------|
-| **一键全量（4 模型）** | 双击 `run.bat` 或：`py -3.12 run_mmuavbench_official_tasks.py --max-samples 0 --models random_baseline clip_vitb32 clip_vitl14 qwen2vl_2b` |
-| **快速试跑** | 双击 `run_extended.bat` 或：`py -3.12 run_mmuavbench_official_tasks.py --fast` |
+| **Full run (4 models)** | 双击 `run.bat` 或：`py -3.12 run_mmuavbench_official_tasks.py --max-samples 0 --models random_baseline clip_vitb32 clip_vitl14 qwen2vl_2b` |
+| **Quick run** | `py -3.12 run_mmuavbench_official_tasks.py --fast` |
 
 数据会自动下载到 `data/mm_uavbench_cache/`。
 
-## 上传到 GitHub
+## Upload to GitHub
 
 仓库：[ZZZamchi/school-project](https://github.com/ZZZamchi/school-project)（uav 放在仓库内的 `uav` 文件夹）。
 
