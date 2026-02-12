@@ -640,14 +640,48 @@ def run_one_task(
     return {"task": task_name, "correct": correct, "total": total, "accuracy": acc, "results": results}
 
 
+def _parse_existing_report(report_path: str) -> dict[str, list[dict]]:
+    """解析已有报告，返回 model_id -> list of task stats。若文件不存在或解析失败则返回空 dict。"""
+    if not os.path.isfile(report_path):
+        return {}
+    out: dict[str, list[dict]] = {}
+    try:
+        with open(report_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        task_line = re.compile(r"\s*\[([^\]]+)\]\s*正确:\s*(\d+)/(\d+)\s*准确率:\s*([\d.]+)%")
+        model_match = re.compile(r"^模型:\s*(\S+)\s+\(.+\)\s*$")
+        current_model: str | None = None
+        current_stats: list[dict] = []
+        for line in lines:
+            m = model_match.match(line.strip())
+            if m:
+                if current_model and current_stats:
+                    out[current_model] = current_stats
+                current_model = m.group(1)
+                current_stats = []
+                continue
+            t = task_line.match(line)
+            if t and current_model:
+                task_name, correct, total, acc = t.group(1), int(t.group(2)), int(t.group(3)), float(t.group(4))
+                current_stats.append({"task": task_name, "correct": correct, "total": total, "accuracy": acc})
+        if current_model and current_stats:
+            out[current_model] = current_stats
+    except Exception:
+        pass
+    return out
+
+
 def write_report(
     results_per_model: dict[str, list[dict]],
     report_path: str,
     device: str,
     max_samples: int | None,
     task_list: list[str],
+    rounds: int = 1,
 ) -> None:
-    """results_per_model: model_id -> list of task stats."""
+    """results_per_model: model_id -> list of task stats。合并已有报告内容，在最佳结果后加 *。"""
+    existing = _parse_existing_report(report_path)
+    merged: dict[str, list[dict]] = {**existing, **results_per_model}
     lines = [
         "=" * 70,
         "MM-UAVBench 图像任务评测报告（多模型 × 多任务，零样本 MCQ）",
@@ -656,10 +690,12 @@ def write_report(
         f"设备: {device}",
         f"每任务样本数: {'全部' if max_samples is None else max_samples}",
         f"任务数: {len(task_list)}",
-        f"模型数: {len(results_per_model)}",
-        "",
+        f"模型数: {len(merged)}",
     ]
-    for model_id, all_stats in results_per_model.items():
+    if rounds > 1:
+        lines.append(f"轮数: {rounds} (取平均)")
+    lines.append("")
+    for model_id, all_stats in merged.items():
         name = AVAILABLE_MODELS.get(model_id, model_id)
         lines.append("-" * 70)
         lines.append(f"模型: {model_id}  ({name})")
@@ -675,27 +711,41 @@ def write_report(
         if total_count:
             lines.append(f"  >> 总体: {total_correct}/{total_count}  平均准确率: {total_correct / total_count * 100:.1f}%")
         lines.append("")
-    # 汇总表：每任务各模型准确率
+    # 汇总表：每任务各模型准确率，最佳加 *
     lines.append("=" * 70)
-    lines.append("汇总表（各任务 × 各模型 准确率%）")
+    lines.append("汇总表（各任务 × 各模型 准确率%，* 表示该任务最佳）")
     lines.append("=" * 70)
-    header = "Task".ljust(36) + "  " + "  ".join(f"{m:14s}" for m in results_per_model.keys())
+    model_ids = list(merged.keys())
+    header = "Task".ljust(36) + "  " + "  ".join(f"{m:14s}" for m in model_ids)
     lines.append(header)
     for task_name in task_list:
         row = task_name.ljust(36)
-        for model_id, all_stats in results_per_model.items():
+        accs: list[tuple[str, float]] = []
+        for model_id, all_stats in merged.items():
             s = next((x for x in all_stats if x["task"] == task_name), None)
             if s and not s.get("error"):
-                row += f"  {s['accuracy']:13.1f}%"
+                accs.append((model_id, s["accuracy"]))
             else:
+                accs.append((model_id, -1.0))
+        best_acc = max(a for _, a in accs if a >= 0) if any(a >= 0 for _, a in accs) else -1
+        for model_id, acc in accs:
+            if acc < 0:
                 row += "  ---"
+            else:
+                star = "*" if acc >= best_acc and best_acc >= 0 else " "
+                row += f"  {acc:12.1f}%{star}"
         lines.append(row)
     row_total = "总体".ljust(36)
-    for model_id, all_stats in results_per_model.items():
+    total_accs: list[float] = []
+    for model_id, all_stats in merged.items():
         tc = sum(s["correct"] for s in all_stats if not s.get("error"))
         tn = sum(s["total"] for s in all_stats if not s.get("error"))
         acc = (tc / tn * 100) if tn else 0
-        row_total += f"  {acc:13.1f}%"
+        total_accs.append(acc)
+    best_total = max(total_accs) if total_accs else -1
+    for acc in total_accs:
+        star = "*" if acc >= best_total and best_total >= 0 else " "
+        row_total += f"  {acc:12.1f}%{star}"
     lines.append(row_total)
     lines.append("")
     lines.append("=" * 70)
@@ -759,6 +809,7 @@ def main():
     parser.add_argument("--report-path", type=str, default=None)
     parser.add_argument("--no-monitor", action="store_true", help="不显示 GPU/内存占用与预计剩余时间")
     parser.add_argument("--batch-size", type=int, default=32, help="CLIP/SigLIP batch size (larger => higher GPU use). 0=no batching")
+    parser.add_argument("--rounds", type=int, default=1, help="每模型跑 N 轮，结果取平均")
     args = parser.parse_args()
 
     if args.check_hardware:
@@ -800,53 +851,88 @@ def main():
         print(f"RAM: {hw['ram_gb']} GB")
     print("Models:", model_ids)
     print("Tasks:", len(task_list))
+    if args.rounds > 1:
+        print("Rounds:", args.rounds, "(取平均)")
 
-    total_steps = len(model_ids) * len(task_list)
+    total_steps = len(model_ids) * len(task_list) * args.rounds
     start_time = time.time()
     step_done = 0
     total_samples_done = 0
 
-    results_per_model = {}
-    for model_id in model_ids:
-        print(f"\n>>> Load model: {model_id} ({AVAILABLE_MODELS[model_id]})")
-        if show_monitor and torch.cuda.is_available():
-            print(f"  [Res] step 0/{total_steps}  |  {get_gpu_resource_string()}", end="")
-            ram_str = get_system_resource_string()
-            if ram_str:
-                print(f"  |  {ram_str}", end="")
-            print()
-        try:
-            predict_fn, batch_fn = get_runner(model_id, device)
-        except Exception as e:
-            print(f"  Load failed: {e}")
-            continue
-        batch_size = args.batch_size if (batch_fn is not None and args.batch_size > 0) else 0
-        if batch_size:
-            print(f"  Batch inference: size={batch_size}")
-        all_stats = []
-        for task_name in task_list:
-            print(f"  --- {task_name} ---")
-            stat = run_one_task(task_name, max_samples, predict_fn, batch_fn=batch_fn, batch_size=batch_size or 1)
-            all_stats.append(stat)
-            if stat.get("error"):
-                print(f"    Error: {stat['error']}")
-            else:
-                print(f"    correct: {stat['correct']}/{stat['total']}, acc: {stat['accuracy']:.1f}%")
-            step_done += 1
-            total_samples_done += stat.get("total") or 0
-            if show_monitor:
-                elapsed = time.time() - start_time
-                eta_sec = (elapsed / step_done) * (total_steps - step_done) if step_done else 0
-                line = f"  [Res] step {step_done}/{total_steps}  |  {get_gpu_resource_string()}"
-                sys_str = get_system_resource_string()
-                if sys_str:
-                    line += f"  |  {sys_str}"
-                line += f"  |  done {total_samples_done} q, elapsed {elapsed/60:.1f} min"
-                if step_done < total_steps and eta_sec > 0:
-                    line += f", ETA {eta_sec/60:.1f} min"
-                print(line)
-                sys.stdout.flush()
-        results_per_model[model_id] = all_stats
+    rounds_data: dict[str, list[list[dict]]] = {m: [] for m in model_ids}
+    for round_idx in range(args.rounds):
+        if args.rounds > 1:
+            print(f"\n{'='*50} Round {round_idx + 1}/{args.rounds} {'='*50}")
+        results_per_model = {}
+        for model_id in model_ids:
+            print(f"\n>>> Load model: {model_id} ({AVAILABLE_MODELS[model_id]})")
+            if show_monitor and torch.cuda.is_available():
+                print(f"  [Res] step 0/{total_steps}  |  {get_gpu_resource_string()}", end="")
+                ram_str = get_system_resource_string()
+                if ram_str:
+                    print(f"  |  {ram_str}", end="")
+                print()
+            try:
+                predict_fn, batch_fn = get_runner(model_id, device)
+            except Exception as e:
+                print(f"  Load failed: {e}")
+                continue
+            batch_size = args.batch_size if (batch_fn is not None and args.batch_size > 0) else 0
+            if batch_size:
+                print(f"  Batch inference: size={batch_size}")
+            all_stats = []
+            for task_name in task_list:
+                print(f"  --- {task_name} ---")
+                stat = run_one_task(task_name, max_samples, predict_fn, batch_fn=batch_fn, batch_size=batch_size or 1)
+                all_stats.append(stat)
+                if stat.get("error"):
+                    print(f"    Error: {stat['error']}")
+                else:
+                    print(f"    correct: {stat['correct']}/{stat['total']}, acc: {stat['accuracy']:.1f}%")
+                step_done += 1
+                total_samples_done += stat.get("total") or 0
+                if show_monitor:
+                    elapsed = time.time() - start_time
+                    eta_sec = (elapsed / step_done) * (total_steps - step_done) if step_done else 0
+                    line = f"  [Res] step {step_done}/{total_steps}  |  {get_gpu_resource_string()}"
+                    sys_str = get_system_resource_string()
+                    if sys_str:
+                        line += f"  |  {sys_str}"
+                    line += f"  |  done {total_samples_done} q, elapsed {elapsed/60:.1f} min"
+                    if step_done < total_steps and eta_sec > 0:
+                        line += f", ETA {eta_sec/60:.1f} min"
+                    print(line)
+                    sys.stdout.flush()
+            results_per_model[model_id] = all_stats
+
+        for m, stats in results_per_model.items():
+            rounds_data[m].append(stats)
+
+    if args.rounds > 1:
+        results_per_model = {}
+        for model_id in model_ids:
+            if not rounds_data[model_id]:
+                continue
+            n_rounds = len(rounds_data[model_id])
+            accs_per_task: dict[str, list[float]] = {}
+            for task_name in task_list:
+                accs = []
+                for rstats in rounds_data[model_id]:
+                    s = next((x for x in rstats if x.get("task") == task_name), None)
+                    if s and not s.get("error"):
+                        accs.append(s["accuracy"])
+                accs_per_task[task_name] = accs
+            avg_stats = []
+            for task_name in task_list:
+                accs = accs_per_task.get(task_name, [])
+                avg_acc = sum(accs) / len(accs) if accs else 0
+                first = next((x for x in rounds_data[model_id][0] if x.get("task") == task_name), None)
+                total = first["total"] if first and not first.get("error") else 0
+                correct = round(avg_acc * total / 100) if total else 0
+                avg_stats.append({"task": task_name, "correct": correct, "total": total, "accuracy": avg_acc})
+            results_per_model[model_id] = avg_stats
+    else:
+        results_per_model = {m: rounds_data[m][0] for m in model_ids if rounds_data[m]}
 
     total_elapsed = time.time() - start_time
     print("\n=== Summary ===")
@@ -860,7 +946,7 @@ def main():
         print(f"Final: {get_gpu_resource_string()}")
 
     if do_report and results_per_model:
-        write_report(results_per_model, report_path, device, max_samples, task_list)
+        write_report(results_per_model, report_path, device, max_samples, task_list, rounds=args.rounds)
     return 0
 
 
