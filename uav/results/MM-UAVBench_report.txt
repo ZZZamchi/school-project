@@ -74,6 +74,7 @@ MM-UAVBench 图像任务评测报告（多模型 × 多任务，零样本 MCQ）
 ----------------------------------------------------------------------
 模型: qwen2vl_2b  (Qwen2-VL-2B-Instruct (Qwen))
 ----------------------------------------------------------------------
+<<<<<<< HEAD
   [Scene_Classification] 正确: 142/239  准确率: 59.3%
   [Orientation_Classification] 正确: 138/739  准确率: 18.7%
   [Environment_State_Classification] 正确: 218/323  准确率: 67.6%
