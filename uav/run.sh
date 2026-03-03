@@ -1,9 +1,9 @@
 #!/bin/bash
-# MM-UAVBench 评测，每模型 3 轮取平均
-# 使用 4 个空闲 L40: 0,1,2,6
+# MM-UAVBench 完整实验：6 模型 × 16 任务 × 3 轮取平均
+# 使用 GPU 4-7（2×A100 80GB + 2×L40）
 
 cd "$(dirname "$0")"
-export CUDA_VISIBLE_DEVICES=0,1,2,6
+export CUDA_VISIBLE_DEVICES=4,5,6,7
 export PYTHONUNBUFFERED=1
 
 python3 run_mmuavbench_official_tasks.py \

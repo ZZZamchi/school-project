@@ -165,7 +165,7 @@ EVENT_TASKS = [
 # 全部 19 任务（16 图像 + 3 视频），--tasks 可显式指定 EVENT 时需后续支持视频
 ALL_TASKS = IMAGE_TASKS + EVENT_TASKS
 
-# 可用模型：id -> display_name
+# 可用模型：id -> display_name（论文中还有 InternVL、LLaVA、MiniCPM 等，可扩展）
 AVAILABLE_MODELS = {
     "random_baseline": "Random baseline (uniform choice)",
     "clip_vitb32": "CLIP ViT-B/32 (openai)",
@@ -196,6 +196,61 @@ def get_image_path(qa: dict) -> str:
     if not resources:
         raise ValueError("no data_resources")
     return resources[0]["path"]
+
+
+VIDEO_FPS = 3.0
+VIDEO_MAX_FRAMES = 8
+
+
+def _sample_video_frames(video_path: str, out_dir: str, num_frames: int = VIDEO_MAX_FRAMES) -> list[str]:
+    """从 mp4 均匀采样 num_frames 帧，保存到 out_dir，返回帧路径列表。"""
+    try:
+        import cv2
+    except ImportError:
+        return [video_path]
+    os.makedirs(out_dir, exist_ok=True)
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return []
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total <= 0:
+        cap.release()
+        return []
+    indices = [int(i * (total - 1) / (num_frames - 1))] if num_frames <= 1 else [
+        min(int(i * total / num_frames), total - 1) for i in range(num_frames)
+    ]
+    paths = []
+    for i, idx in enumerate(indices):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        out_path = os.path.join(out_dir, f"frame_{i:04d}.jpg")
+        Image.fromarray(frame).save(out_path, quality=85)
+        paths.append(out_path)
+    cap.release()
+    return paths
+
+
+def get_media_paths(task_name: str, qa: dict) -> list[str]:
+    """返回题目对应的媒体路径列表：图像任务 1 张，视频任务为采样后的多帧路径。"""
+    resources = qa.get("metadata", {}).get("data_resources", [])
+    if not resources:
+        raise ValueError("no data_resources")
+    rel_path = resources[0]["path"]
+    local_path = hf_hub_download(
+        repo_id=REPO_ID,
+        filename=rel_path,
+        repo_type=REPO_TYPE,
+        cache_dir=CACHE_DIR,
+    )
+    if task_name in EVENT_TASKS and rel_path.lower().endswith(".mp4"):
+        qid = qa.get("question_id", "unknown")
+        out_dir = os.path.join(CACHE_DIR, "video_frames", task_name, str(qid))
+        frame_paths = _sample_video_frames(local_path, out_dir, VIDEO_MAX_FRAMES)
+        return frame_paths if frame_paths else [local_path]
+    return [local_path]
 
 
 def options_to_ordered_list(options: dict) -> tuple[list[str], list[str]]:
@@ -455,6 +510,50 @@ def _make_qwen2vl_runner(device: str, size: str):
         except Exception:
             return letters[0] if letters else ""
 
+    def predict_multi(image_paths: list[str], options: dict) -> str:
+        if not image_paths:
+            letters, _ = options_to_ordered_list(options)
+            return letters[0] if letters else ""
+        letters, texts = options_to_ordered_list(options)
+        if not letters or not texts:
+            return ""
+        opt_lines = "\n".join(f"{letters[i]}. {texts[i]}" for i in range(len(letters)))
+        prompt = (
+            "You are an expert in drone and aerial image/video analysis. "
+            "Answer the following multiple-choice question based on the image(s) (frames in order). "
+            "Reply with ONLY one letter: A, B, C, or D.\n\n"
+            f"Question: Based on the image(s), choose the correct option.\n\n"
+            f"Options:\n{opt_lines}\n\nAnswer:"
+        )
+        content = []
+        for p in image_paths:
+            content.append({"type": "image", "path": p})
+        content.append({"type": "text", "text": prompt})
+        conversation = [{"role": "user", "content": content}]
+        try:
+            inputs = processor.apply_chat_template(
+                conversation,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+            if device == "cuda":
+                inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+            else:
+                inputs = {k: v.to("cpu") if hasattr(v, "to") else v for k, v in inputs.items()}
+            max_tokens = 32
+            with torch.inference_mode():
+                out_ids = model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
+            input_len = inputs["input_ids"].shape[1]
+            gen_ids = out_ids[:, input_len:]
+            output_text = processor.batch_decode(gen_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+            pred = _parse_mcq_letter(output_text[0] if output_text else "")
+            return pred if pred in letters else (letters[0] if letters else "")
+        except Exception:
+            return letters[0] if letters else ""
+
+    predict.predict_multi = predict_multi
     return predict
 
 
@@ -528,6 +627,50 @@ def _make_qwen3vl_runner(device: str):
         except Exception:
             return letters[0] if letters else ""
 
+    def predict_multi(image_paths: list[str], options: dict) -> str:
+        letters, texts = options_to_ordered_list(options)
+        if not image_paths or not letters or not texts:
+            return letters[0] if letters else ""
+        opt_lines = "\n".join(f"{letters[i]}. {texts[i]}" for i in range(len(letters)))
+        prompt = (
+            "You are an expert in drone and aerial image/video analysis. "
+            "Answer the following multiple-choice question based on the image(s) (frames in order). "
+            "Reply with ONLY one letter: A, B, C, or D.\n\n"
+            f"Question: Based on the image(s), choose the correct option.\n\n"
+            f"Options:\n{opt_lines}\n\nAnswer:"
+        )
+        content = []
+        for p in image_paths:
+            img_ref = os.path.abspath(p).replace("\\", "/")
+            if not img_ref.startswith("file://"):
+                img_ref = "file:///" + img_ref
+            content.append({"type": "image", "image": img_ref})
+        content.append({"type": "text", "text": prompt})
+        conversation = [{"role": "user", "content": content}]
+        try:
+            inputs = processor.apply_chat_template(
+                conversation,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+            inputs.pop("token_type_ids", None)
+            if device == "cuda":
+                inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+            else:
+                inputs = {k: v.to("cpu") if hasattr(v, "to") else v for k, v in inputs.items()}
+            with torch.inference_mode():
+                out_ids = model.generate(**inputs, max_new_tokens=32, do_sample=False)
+            input_len = inputs["input_ids"].shape[1]
+            gen_ids = out_ids[:, input_len:]
+            output_text = processor.batch_decode(gen_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+            pred = _parse_mcq_letter(output_text[0] if output_text else "")
+            return pred if pred in letters else (letters[0] if letters else "")
+        except Exception:
+            return letters[0] if letters else ""
+
+    predict.predict_multi = predict_multi
     return predict
 
 
@@ -545,15 +688,15 @@ def get_runner(model_id: str, device: str) -> tuple:
         return _make_qwen2vl_runner(device, "7b"), None
     if model_id == "qwen3vl_8b":
         return _make_qwen3vl_runner(device), None
-    raise ValueError(f"未知模型: {model_id}，可选: {list(AVAILABLE_MODELS.keys())}")
+    raise ValueError(f"未知模型: {model_id}，可选: {list(AVAILABLE_MODELS.keys())}。论文中 InternVL/LLaVA/MiniCPM 等可参考官方 VLMEvalKit 接入。")
 
 
-def _load_chunk_images(chunk: list[tuple[str, dict, str, dict]]) -> list:
-    """Load images for a chunk in current thread. Returns list of PIL.Image or None (same length as chunk)."""
+def _load_chunk_images(chunk: list[tuple[list[str], dict, str, dict]]) -> list:
+    """Load first image of each item for batch. Returns list of PIL.Image or None."""
     out: list = []
-    for path, opts, _, _ in chunk:
+    for paths, opts, _, _ in chunk:
         try:
-            out.append(Image.open(path).convert("RGB"))
+            out.append(Image.open(paths[0]).convert("RGB"))
         except (PermissionError, OSError, IOError, Exception):
             out.append(None)
     return out
@@ -570,24 +713,19 @@ def run_one_task(
         qa_list = load_task_qa(task_name, max_samples=max_samples)
     except Exception as e:
         return {"task": task_name, "correct": 0, "total": 0, "accuracy": 0.0, "results": [], "error": str(e)}
-    # 先收集所有能成功下载的 (path, options, gt, qa)
-    items: list[tuple[str, dict, str, dict]] = []
+    # 先收集所有能成功下载的 (paths, options, gt, qa)，paths 为 1 张图或视频多帧
+    items: list[tuple[list[str], dict, str, dict]] = []
     for qa in qa_list:
         try:
-            rel_path = get_image_path(qa)
-            local_path = hf_hub_download(
-                repo_id=REPO_ID,
-                filename=rel_path,
-                repo_type=REPO_TYPE,
-                cache_dir=CACHE_DIR,
-            )
+            paths = get_media_paths(task_name, qa)
         except Exception:
             continue
         options = qa.get("options") or {}
         gt = normalize_answer(qa.get("answer") or "")
-        items.append((local_path, options, gt, qa))
+        items.append((paths, options, gt, qa))
     correct, total, results = 0, 0, []
-    if batch_fn is not None and batch_size > 1:
+    use_batch = batch_fn is not None and batch_size > 1 and all(len(p) == 1 for p, _, _, _ in items)
+    if use_batch:
         num_chunks = (len(items) + batch_size - 1) // batch_size
         prefetch_queue: queue.Queue = queue.Queue(maxsize=num_chunks)
 
@@ -604,7 +742,7 @@ def run_one_task(
         for idx in range(num_chunks):
             start = idx * batch_size
             chunk = items[start : start + batch_size]
-            batch_input = [(path, opts) for path, opts, _, _ in chunk]
+            batch_input = [(paths[0], opts) for paths, opts, _, _ in chunk]
             preloaded: list | None = None
             if idx > 0:
                 _, preloaded = prefetch_queue.get()
@@ -612,7 +750,7 @@ def run_one_task(
                 preds = batch_fn(batch_input, preloaded_images=preloaded) if preloaded is not None else batch_fn(batch_input)
             except Exception:
                 preds = [""] * len(chunk)
-            for (path, opts, gt, qa), pred in zip(chunk, preds):
+            for (paths, opts, gt, qa), pred in zip(chunk, preds):
                 if not pred:
                     continue
                 total += 1
@@ -625,9 +763,13 @@ def run_one_task(
             pass
         prefetch_thread.join(timeout=1.0)
     else:
-        for local_path, options, gt, qa in items:
+        for paths, options, gt, qa in items:
             try:
-                pred = predict_fn(local_path, options)
+                predict_multi = getattr(predict_fn, "predict_multi", None)
+                if len(paths) > 1 and predict_multi is not None:
+                    pred = predict_multi(paths, options)
+                else:
+                    pred = predict_fn(paths[0], options)
             except (PermissionError, OSError, IOError):
                 continue
             if not pred:
@@ -810,6 +952,7 @@ def main():
     parser.add_argument("--no-monitor", action="store_true", help="不显示 GPU/内存占用与预计剩余时间")
     parser.add_argument("--batch-size", type=int, default=32, help="CLIP/SigLIP batch size (larger => higher GPU use). 0=no batching")
     parser.add_argument("--rounds", type=int, default=1, help="每模型跑 N 轮，结果取平均")
+    parser.add_argument("--all-tasks", action="store_true", help="包含 3 个视频任务 Event_*（需支持多帧的模型如 Qwen2-VL/Qwen3-VL）")
     args = parser.parse_args()
 
     if args.check_hardware:
@@ -825,7 +968,7 @@ def main():
         if args.cpu_threads is None and "--cpu-threads" not in argv_str:
             args.cpu_threads = min(16, os.cpu_count() or 8)
 
-    task_list = args.tasks or IMAGE_TASKS
+    task_list = args.tasks or (ALL_TASKS if args.all_tasks else IMAGE_TASKS)
     model_ids = args.models
     max_samples = None if args.max_samples == 0 else args.max_samples
     do_report = args.report and not args.no_report
