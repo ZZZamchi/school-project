@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-MM-UAVBench 官方图像任务评测（多模型、多任务，零样本 MCQ）
-支持多种 VLM，从 HuggingFace 拉取题目与图片，生成 txt 报告。
+MM-UAVBench 官方任务评测（图像+视频，多模型、多任务，零样本 MCQ）
+支持多种 VLM，从 HuggingFace 拉取题目与媒体，生成 txt 报告。默认全任务（19 任务）。
 根据硬件自动做线程/显存相关优化。
 """
 from __future__ import annotations
@@ -826,7 +826,7 @@ def write_report(
     merged: dict[str, list[dict]] = {**existing, **results_per_model}
     lines = [
         "=" * 70,
-        "MM-UAVBench 图像任务评测报告（多模型 × 多任务，零样本 MCQ）",
+        "MM-UAVBench 评测报告（图像+视频，多模型 × 多任务，零样本 MCQ）",
         "=" * 70,
         f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"设备: {device}",
@@ -952,8 +952,11 @@ def main():
     parser.add_argument("--no-monitor", action="store_true", help="不显示 GPU/内存占用与预计剩余时间")
     parser.add_argument("--batch-size", type=int, default=32, help="CLIP/SigLIP batch size (larger => higher GPU use). 0=no batching")
     parser.add_argument("--rounds", type=int, default=1, help="每模型跑 N 轮，结果取平均")
-    parser.add_argument("--all-tasks", action="store_true", help="包含 3 个视频任务 Event_*（需支持多帧的模型如 Qwen2-VL/Qwen3-VL）")
+    parser.add_argument("--all-tasks", action="store_true", default=True, help="全任务（19 任务，含 3 个视频 Event_*），默认开启")
+    parser.add_argument("--image-only", action="store_true", help="仅跑 16 个图像任务（关闭 --all-tasks）")
     args = parser.parse_args()
+    if args.image_only:
+        args.all_tasks = False
 
     if args.check_hardware:
         return cmd_check_hardware()
@@ -968,7 +971,7 @@ def main():
         if args.cpu_threads is None and "--cpu-threads" not in argv_str:
             args.cpu_threads = min(16, os.cpu_count() or 8)
 
-    task_list = args.tasks or (ALL_TASKS if args.all_tasks else IMAGE_TASKS)
+    task_list = args.tasks or (ALL_TASKS if args.all_tasks else IMAGE_TASKS)  # 默认全任务
     model_ids = args.models
     max_samples = None if args.max_samples == 0 else args.max_samples
     do_report = args.report and not args.no_report
