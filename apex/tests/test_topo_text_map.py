@@ -23,16 +23,16 @@ from uav_search.topo_text_map.schema import Edge, Frontier, MapGraph, Node, Topo
 
 
 def _demo_topo_text_map() -> TopoTextMap:
-    """单测用：与 llm_prompts.FEW_SHOT_JSON 结构一致的静态图（非 builder 占位）。"""
+    """单测用：固定 JSON 拓扑样例（与生产/真实场景无关；仅校验 schema 往返）。"""
     nodes = [
         Node(
             node_id="Node_0",
-            semantic_description="茂密的针叶林上方，视野受限。",
+            semantic_description="高架匝道旁的灰色隔音屏，金属反光条呈斜向条纹；下方车流呈断续光带。",
             visit_count=1,
         ),
         Node(
             node_id="Node_1",
-            semantic_description="开阔的沙滩，连接着森林和海洋。",
+            semantic_description="夜间物流园装卸区，集装箱堆垛形成规则矩形阴影，地面标线褪色发白。",
             visit_count=1,
         ),
     ]
@@ -40,34 +40,38 @@ def _demo_topo_text_map() -> TopoTextMap:
         Edge(
             from_node="Node_0",
             to_node="Node_1",
-            action_taken="向南飞行 (South)",
-            semantic_reason="南方视野开阔，且检测到类似水体的反光。",
+            action_taken="向西南偏航并下降 (SouthWest)",
+            semantic_reason="侧风较强，选择贴近建筑物背风侧以减小横漂，同时保持对装卸区入口的视线。",
         )
     ]
     ufs = [
         Frontier(
             source_node="Node_1",
             direction="东 (East)",
-            visual_observation="一望无际的深水区。",
+            visual_observation="远处航站楼玻璃幕墙呈条状高光，疑似有进近灯光但未确认。",
         ),
         Frontier(
             source_node="Node_1",
             direction="东南 (SouthEast)",
-            visual_observation="海面上有一个模糊的黑色凸起物。",
+            visual_observation="成片光伏板阵列，强镜面反射导致曝光过饱和，细节不可靠。",
         ),
         Frontier(
             source_node="Node_1",
             direction="西 (West)",
-            visual_observation="沿着海岸线的礁石区，海浪很大。",
+            visual_observation="铁路编组场平行股道密集，枕木纹理重复度高，易产生视错觉。",
         ),
         Frontier(
             source_node="Node_0",
             direction="北 (North)",
-            visual_observation="更深的森林内部。",
+            visual_observation="城市天际线轮廓被雾霾柔化，最高楼顶部红色防撞灯周期性闪烁。",
         ),
     ]
     mg = MapGraph(nodes=nodes, edges=edges, unexplored_frontiers=ufs)
-    return TopoTextMap(task="demo nav task", current_location_id="Node_1", map_graph=mg)
+    return TopoTextMap(
+        task="unittest synthetic topo lattice-v2",
+        current_location_id="Node_1",
+        map_graph=mg,
+    )
 
 
 class TestTopoTextMap(unittest.TestCase):
@@ -77,7 +81,7 @@ class TestTopoTextMap(unittest.TestCase):
         s = json.dumps(d, ensure_ascii=False)
         d2 = json.loads(s)
         back = TopoTextMap.from_dict(d2)
-        self.assertEqual(back.task, "demo nav task")
+        self.assertEqual(back.task, "unittest synthetic topo lattice-v2")
         self.assertEqual(back.current_location_id, "Node_1")
         self.assertEqual(len(back.map_graph.nodes), 2)
         self.assertEqual(len(back.map_graph.edges), 1)
@@ -145,7 +149,7 @@ class TestTopoTextMap(unittest.TestCase):
 
     def test_score_wedges_from_rgb_shape(self) -> None:
         rgb = np.zeros((32, 32, 3), dtype=np.uint8)
-        s = score_wedges_from_rgb(rgb, "find boat")
+        s = score_wedges_from_rgb(rgb, "locate depot alpha")
         self.assertEqual(s.shape, (8,))
 
     def test_builder_facts_unexplored_feasible_with_topo_nav(self) -> None:
