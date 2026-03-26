@@ -1,0 +1,14 @@
+# Qwen3-VL-8B-Instruct（APEX --policy apex_vl）
+# 模型卡: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
+#
+# 若 pip 版 transformers 尚无 Qwen3VLForConditionalGeneration，请额外安装源码版：
+#   pip install git+https://github.com/huggingface/transformers
+#
+torch>=2.1.0
+accelerate>=0.33.0
+safetensors>=0.4.0
+huggingface_hub>=0.24.0
+pillow>=10.0.0
+sentencepiece>=0.2.0
+protobuf>=3.20.0
+transformers>=4.46.0
