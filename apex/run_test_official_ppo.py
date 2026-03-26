@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""在 ``AirSimDroneEnv`` 上评测：``ppo`` / ``vision_topo`` / ``apex_vl``（Qwen3-VL + 拓扑记忆）。"""
+"""在 ``AirSimDroneEnv`` 上评测：``ppo`` 或 ``apex_vl``（Qwen3-VL + 结构化拓扑 facts；无纯视觉启发式策略）。"""
 from __future__ import annotations
 
 import argparse
@@ -35,7 +35,6 @@ from uav_search.topo_text_map.topo_nav_policy import (
 )
 from uav_search.topo_text_map.apex_vl_nav import apex_vl_topo_nav_decide
 from uav_search.topo_text_map.ego_map_context import ego_map_context_for_policy
-from uav_search.topo_text_map.vision_topo_nav import vision_topo_nav_decide
 
 
 def _episode_success_from_info(info: dict) -> bool:
@@ -49,6 +48,22 @@ def _get_xyz(client) -> list[float]:
     st = client.getMultirotorState()
     p = st.kinematics_estimated.position
     return [float(p.x_val), float(p.y_val), float(p.z_val)]
+
+
+def _path_length_meters(xyz: list[list[float]]) -> float:
+    """世界坐标系下轨迹折线长度（米）。"""
+    arr = np.asarray(xyz, dtype=np.float64)
+    if len(arr) < 2:
+        return 0.0
+    d = np.diff(arr, axis=0)
+    return float(np.sum(np.linalg.norm(d, axis=1)))
+
+
+def _spl_episode(success: bool, path_len_m: float, shortest_m: float) -> float:
+    """SPL：成功时 shortest / max(path, shortest)；失败为 0。最短路径用起点—目标欧氏距离近似。"""
+    if not success or shortest_m <= 1e-6:
+        return 0.0
+    return float(shortest_m / max(path_len_m, shortest_m))
 
 
 def _capture_rgb(client) -> np.ndarray:
@@ -152,6 +167,7 @@ def _plot_traj_3d(
     xyz: list[list[float]],
     goal_xyz: np.ndarray | None = None,
     start_xyz: list[float] | None = None,
+    subtitle: str = "",
 ) -> None:
     import matplotlib
 
@@ -238,7 +254,10 @@ def _plot_traj_3d(
     ax.set_xlabel("x (world)")
     ax.set_ylabel("y (world)")
     ax.set_zlabel("z (world)")
-    ax.set_title("Trajectory — 3D")
+    _title = "Trajectory — 3D (world)"
+    if subtitle:
+        _title = f"{_title}\n{subtitle}"
+    ax.set_title(_title, fontsize=11)
     ax.view_init(elev=24, azim=-58)
     ax.legend(loc="upper left", fontsize=9)
     plt.tight_layout()
@@ -367,7 +386,6 @@ def _save_topo_json(path: str, builder: TopoTextMapBuilder, meta: dict) -> None:
     payload = {
         **meta,
         "topo_text_map": builder.to_json_dict(),
-        "facts_for_llm": builder.facts_for_llm(),
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -413,14 +431,14 @@ def main() -> None:
     ap.add_argument(
         "--no_topo",
         action="store_true",
-        help="不保存 topo_maps/（vision_topo / apex_vl 仍维护拓扑，仅不写盘）",
+        help="不保存 topo_maps/（apex_vl 仍维护拓扑，仅不写盘）",
     )
     ap.add_argument("--topo_grid", type=float, default=15.0)
     ap.add_argument(
         "--policy",
         type=str,
-        choices=("ppo", "vision_topo", "apex_vl"),
-        default="vision_topo",
+        choices=("ppo", "apex_vl"),
+        default="apex_vl",
     )
     ap.add_argument(
         "--vl_max_new_tokens",
@@ -439,6 +457,12 @@ def main() -> None:
         type=str,
         default=None,
         help="apex_vl：模型目录或 HF id（默认读 OFFICIAL_APEX_QWEN3_VL_DIR 或 Qwen/Qwen3-VL-8B-Instruct）",
+    )
+    ap.add_argument(
+        "--oob_grid_margin",
+        type=float,
+        default=2.5,
+        help="apex_vl：栅格安全边距（越小越晚触发边界避障，更多步可走 VLM 决策）",
     )
     args = ap.parse_args()
 
@@ -492,6 +516,8 @@ def main() -> None:
         save_viz,
         "no_traj_plots:",
         args.no_traj_plots,
+        "oob_grid_margin:",
+        args.oob_grid_margin,
         flush=True,
     )
 
@@ -507,7 +533,7 @@ def main() -> None:
         traj_dir = os.path.join(root, "trajectories")
         frames_dir = os.path.join(root, "step_frames")
         topo_dir: str | None = None
-        use_topo_policy = args.policy in ("vision_topo", "apex_vl")
+        use_topo_policy = args.policy == "apex_vl"
         save_topo = save_viz and use_topo_policy and not args.no_topo
         if save_viz:
             os.makedirs(traj_dir, exist_ok=True)
@@ -525,6 +551,7 @@ def main() -> None:
             traj_xyz: list[list[float]] = []
             start_xyz = _get_xyz(client)
             traj_xyz.append(start_xyz.copy())
+            goal_xyz = np.asarray(env.target_position, dtype=np.float64).reshape(3).copy()
 
             topo_builder: TopoTextMapBuilder | None = None
             if use_topo_policy:
@@ -558,7 +585,7 @@ def main() -> None:
                 if model is None:
                     env._update_uav_pose_from_airsim()
                 map_ctx = None
-                if args.policy in ("vision_topo", "apex_vl"):
+                if args.policy == "apex_vl":
                     map_ctx = ego_map_context_for_policy(
                         env.attraction_map,
                         env.exploration_map,
@@ -582,6 +609,7 @@ def main() -> None:
                         rgb_live,
                         grid_position=np.asarray(env.uav_pose["position"]),
                         task_text=_task_string_for_topo(env),
+                        grid_margin=args.oob_grid_margin,
                         max_new_tokens=args.vl_max_new_tokens,
                         temperature=args.vl_temperature,
                         model_id_or_path=args.apex_vl_model,
@@ -595,24 +623,7 @@ def main() -> None:
                         "decision": decision,
                     }
                 else:
-                    if topo_builder is None:
-                        raise RuntimeError("vision_topo 需要 topo_builder")
-                    rgb_live = _capture_rgb(client)
-                    action_int, decision = vision_topo_nav_decide(
-                        client,
-                        topo_builder,
-                        rgb_live,
-                        grid_position=np.asarray(env.uav_pose["position"]),
-                        task_text=_task_string_for_topo(env),
-                        map_context=map_ctx,
-                    )
-                    action = np.array([action_int], dtype=np.int64)
-                    decision_meta = {
-                        "policy": "vision_topo",
-                        "action_id": action_int,
-                        "action_name_cn": TOPO_ACTION_NAMES_CN.get(action_int, str(action_int)),
-                        "decision": decision,
-                    }
+                    raise RuntimeError(f"未处理的 policy: {args.policy}")
                 obs, reward, terminated, truncated, info = env.step(action)
                 ep_reward += float(reward)
                 steps += 1
@@ -654,6 +665,11 @@ def main() -> None:
                     _save_rgb_frame(client, os.path.join(frames_dir, f"ep{ep}_step{steps:04d}_rgb.png"))
 
             success = _episode_success_from_info(last_info)
+            path_len_m = _path_length_meters(traj_xyz)
+            start_np = np.asarray(start_xyz, dtype=np.float64).reshape(3)
+            goal_np = np.asarray(goal_xyz, dtype=np.float64).reshape(3)
+            shortest_m = float(np.linalg.norm(goal_np - start_np))
+            spl = _spl_episode(success, path_len_m, shortest_m)
 
             if topo_dir is not None and step_decisions_log:
                 sdp = os.path.join(topo_dir, f"ep{ep}_step_decisions.json")
@@ -682,7 +698,12 @@ def main() -> None:
                     "map": _tm["map"],
                     "difficulty": _tm["difficulty"],
                     "start_xyz": start_xyz,
+                    "goal_xyz": goal_xyz.reshape(-1).tolist(),
                     "trajectory_xyz": traj_xyz,
+                    "path_length_m": round(path_len_m, 4),
+                    "shortest_path_m": round(shortest_m, 4),
+                    "spl": round(spl, 6),
+                    "oob_grid_margin": args.oob_grid_margin,
                     "steps": steps,
                     "success": success,
                     "policy": args.policy,
@@ -700,7 +721,16 @@ def main() -> None:
                             _plot_traj_xy(f"{base}_traj_xy.png", traj_xyz, None, start_xyz=start_xyz)
                             _plot_traj_xz(f"{base}_traj_xz.png", traj_xyz, None, start_xyz=start_xyz)
                             _plot_traj_yz(f"{base}_traj_yz.png", traj_xyz, None, start_xyz=start_xyz)
-                        _plot_traj_3d(f"{base}_traj_3d.png", traj_xyz, None, start_xyz=start_xyz)
+                        sub3d = (
+                            f"path={path_len_m:.1f}m | straight={shortest_m:.1f}m | SPL={spl:.3f} | ok={success}"
+                        )
+                        _plot_traj_3d(
+                            f"{base}_traj_3d.png",
+                            traj_xyz,
+                            goal_np,
+                            start_xyz=start_xyz,
+                            subtitle=sub3d,
+                        )
                         _plot_obstacle_map_3d(
                             f"{base}_obstacle_map_3d.png",
                             env.obstacle_map,
@@ -729,6 +759,9 @@ def main() -> None:
                     "steps": steps,
                     "return": round(ep_reward, 4),
                     "success": success,
+                    "path_length_m": round(path_len_m, 4),
+                    "shortest_path_m": round(shortest_m, 4),
+                    "spl": round(spl, 6),
                     "info_keys": list(last_info.keys()) if last_info else [],
                     "ep_reward_sparse": last_info.get("ep_reward_sparse"),
                     "ep_step": last_info.get("ep_step"),
@@ -736,12 +769,17 @@ def main() -> None:
             )
             global_idx += 1
             print(
-                f"[APEX test] task {tid} ep {ep} steps={steps} success={success} return={ep_reward:.2f}",
+                f"[APEX test] task {tid} ep {ep} steps={steps} success={success} SPL={spl:.3f} "
+                f"path_len={path_len_m:.1f}m return={ep_reward:.2f}",
                 flush=True,
             )
 
     env.close()
-    sr = float(np.mean([1.0 if r["success"] else 0.0 for r in rows]))
+    sr = float(np.mean([1.0 if r["success"] else 0.0 for r in rows])) if rows else 0.0
+    spls = [float(r["spl"]) for r in rows]
+    mean_spl = float(np.mean(spls)) if spls else 0.0
+    plens = [float(r["path_length_m"]) for r in rows]
+    mean_path_m = float(np.mean(plens)) if plens else 0.0
     out = {
         "policy": args.policy,
         "checkpoint": ckpt,
@@ -751,17 +789,34 @@ def main() -> None:
         "total_episodes": len(rows),
         "wall_time_sec": round(time.time() - t0, 2),
         "SR": sr,
+        "mean_SPL": round(mean_spl, 6),
+        "mean_path_length_m": round(mean_path_m, 4),
+        "oob_grid_margin": args.oob_grid_margin,
+        "map_fusion_hints": {
+            "APEX_FUSE_W_EXPLORATION": os.environ.get("APEX_FUSE_W_EXPLORATION", "0.35"),
+            "APEX_FUSE_W_ATTRACTION": os.environ.get("APEX_FUSE_W_ATTRACTION", "0.75"),
+            "APEX_FUSE_W_OBSTACLE": os.environ.get("APEX_FUSE_W_OBSTACLE", "0.6"),
+        },
         "save_viz": save_viz,
         "save_dir": args.save_dir,
         "multi_task_subdirs": multi_task,
         "traj_2d_projections": save_viz and not args.no_traj_2d and not args.no_traj_plots,
+        "traj_3d": save_viz and not args.no_traj_plots,
         "no_traj_plots": bool(args.no_traj_plots),
         "episodes": rows,
     }
     out_path = os.path.join(args.save_dir, "test_results.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
-    print("[APEX test] SR =", sr, "| results:", out_path, flush=True)
+    print(
+        "[APEX test] SR =",
+        sr,
+        "mean_SPL =",
+        mean_spl,
+        "| results:",
+        out_path,
+        flush=True,
+    )
     if save_viz:
         print("[APEX test] out:", args.save_dir, "| task_* subdirs:", multi_task, flush=True)
 

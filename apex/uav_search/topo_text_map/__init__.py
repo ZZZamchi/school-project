@@ -7,7 +7,7 @@ from uav_search.topo_text_map.schema import (
     Node,
     TopoTextMap,
 )
-from uav_search.topo_text_map.builder import TopoTextMapBuilder, build_example_user_format
+from uav_search.topo_text_map.builder import TopoTextMapBuilder
 from uav_search.topo_text_map.topo_nav_policy import topo_nav_policy_action
 from uav_search.topo_text_map.llm_prompts import (
     build_prompt_pair,
@@ -25,7 +25,6 @@ __all__ = [
     "Node",
     "TopoTextMap",
     "TopoTextMapBuilder",
-    "build_example_user_format",
     "build_system_prompt",
     "build_user_prompt_from_facts",
     "build_prompt_pair",

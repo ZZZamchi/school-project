@@ -1,6 +1,7 @@
 """从全网格 attraction / exploration / obstacle 地图抽取与 PPO 一致的 ego 朝向系摘要，供拓扑/VLM 策略使用。"""
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import numpy as np
@@ -145,10 +146,15 @@ def fuse_wedge_scores_with_map_context(
     wedge_scores: np.ndarray,
     map_context: dict[str, Any] | None,
     *,
-    w_attraction: float = 0.75,
-    w_obstacle: float = 0.6,
+    w_attraction: float | None = None,
+    w_obstacle: float | None = None,
+    w_exploration: float | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    """用 attraction 引导、obstacle 抑制，融合 Sobel wedge 分数。"""
+    """用 attraction 引导、obstacle 抑制，并对「低探索度」扇区加权以鼓励探索未覆盖区域。"""
+    wa = float(os.environ.get("APEX_FUSE_W_ATTRACTION", "0.75")) if w_attraction is None else w_attraction
+    wo = float(os.environ.get("APEX_FUSE_W_OBSTACLE", "0.6")) if w_obstacle is None else w_obstacle
+    we = float(os.environ.get("APEX_FUSE_W_EXPLORATION", "0.35")) if w_exploration is None else w_exploration
+
     ws = np.asarray(wedge_scores, dtype=np.float64).reshape(8).copy()
     meta: dict[str, Any] = {"fused": False}
     if not map_context:
@@ -167,9 +173,21 @@ def fuse_wedge_scores_with_map_context(
         o = np.zeros(8, dtype=np.float64)
     o = np.clip(o, 0.0, 1.0)
 
-    fused = ws * (1.0 - w_attraction + w_attraction * a_n) * (1.0 - w_obstacle * o)
+    fused = ws * (1.0 - wa + wa * a_n) * (1.0 - wo * o)
+
+    ex = np.asarray(map_context.get("exploration_sector_mean_ego8", []), dtype=np.float64)
+    if ex.size == 8 and we > 1e-9:
+        ex = np.maximum(ex, 0.0)
+        mx = float(np.max(ex))
+        if mx > 1e-9:
+            ex_unseen = 1.0 - np.clip(ex / mx, 0.0, 1.0)
+        else:
+            ex_unseen = np.ones(8, dtype=np.float64)
+        fused = fused * (1.0 + we * ex_unseen)
+        meta["exploration_unseen_ego8"] = [round(float(x), 4) for x in ex_unseen]
+
     if float(np.max(fused)) < 1e-9:
         return ws, {**meta, "fused": False, "reason": "fused_near_zero"}
     meta["fused"] = True
-    meta["weights"] = {"w_attraction": w_attraction, "w_obstacle": w_obstacle}
+    meta["weights"] = {"w_attraction": wa, "w_obstacle": wo, "w_exploration": we}
     return fused, meta

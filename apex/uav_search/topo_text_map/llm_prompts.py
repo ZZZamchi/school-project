@@ -5,7 +5,7 @@
 1. 调用 ``build_system_prompt()`` + ``build_user_prompt_from_facts()`` 得到字符串，送入任意聊天 API；
 2. 将模型返回的 **纯 JSON**（可含 ```json 围栏）交给 ``parse_llm_topo_json`` → ``TopoTextMap``。
 
-本地 ``TopoTextMapBuilder`` 的模板描述仅作无 LLM 时的回退；**正式管线应以本文件 prompt 为准**。
+结构化事实由 ``TopoTextMapBuilder.facts_for_llm()`` 提供；**自然语言拓扑字段须由 LLM 根据本模块 prompt 生成**。
 """
 from __future__ import annotations
 

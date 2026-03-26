@@ -14,17 +14,65 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from uav_search.topo_text_map.builder import TopoTextMapBuilder, build_example_user_format
+from uav_search.topo_text_map.builder import TopoTextMapBuilder
 from uav_search.topo_text_map.llm_prompts import build_prompt_pair, export_prompt_bundle, parse_llm_topo_json
 from uav_search.topo_text_map.topo_nav_policy import choose_frontier_nearest_bearing, dir_label_to_bearing_deg
 from uav_search.topo_text_map.ego_map_context import ego_map_context_for_policy, fuse_wedge_scores_with_map_context
 from uav_search.topo_text_map.vision_topo_nav import _body_wedge_idx_for_world_bearing, score_wedges_from_rgb
-from uav_search.topo_text_map.schema import TopoTextMap
+from uav_search.topo_text_map.schema import Edge, Frontier, MapGraph, Node, TopoTextMap
+
+
+def _demo_topo_text_map() -> TopoTextMap:
+    """单测用：与 llm_prompts.FEW_SHOT_JSON 结构一致的静态图（非 builder 占位）。"""
+    nodes = [
+        Node(
+            node_id="Node_0",
+            semantic_description="茂密的针叶林上方，视野受限。",
+            visit_count=1,
+        ),
+        Node(
+            node_id="Node_1",
+            semantic_description="开阔的沙滩，连接着森林和海洋。",
+            visit_count=1,
+        ),
+    ]
+    edges = [
+        Edge(
+            from_node="Node_0",
+            to_node="Node_1",
+            action_taken="向南飞行 (South)",
+            semantic_reason="南方视野开阔，且检测到类似水体的反光。",
+        )
+    ]
+    ufs = [
+        Frontier(
+            source_node="Node_1",
+            direction="东 (East)",
+            visual_observation="一望无际的深水区。",
+        ),
+        Frontier(
+            source_node="Node_1",
+            direction="东南 (SouthEast)",
+            visual_observation="海面上有一个模糊的黑色凸起物。",
+        ),
+        Frontier(
+            source_node="Node_1",
+            direction="西 (West)",
+            visual_observation="沿着海岸线的礁石区，海浪很大。",
+        ),
+        Frontier(
+            source_node="Node_0",
+            direction="北 (North)",
+            visual_observation="更深的森林内部。",
+        ),
+    ]
+    mg = MapGraph(nodes=nodes, edges=edges, unexplored_frontiers=ufs)
+    return TopoTextMap(task="demo nav task", current_location_id="Node_1", map_graph=mg)
 
 
 class TestTopoTextMap(unittest.TestCase):
     def test_example_roundtrip(self) -> None:
-        ex = build_example_user_format()
+        ex = _demo_topo_text_map()
         d = ex.to_dict()
         s = json.dumps(d, ensure_ascii=False)
         d2 = json.loads(s)
@@ -41,8 +89,9 @@ class TestTopoTextMap(unittest.TestCase):
         b.step(25.0, 0.0, -5.0, 0)
         b.step(45.0, 2.0, -5.0, 0)
         d = b.to_json_dict()
-        self.assertGreaterEqual(len(d["map_graph"]["nodes"]), 2)
-        self.assertGreaterEqual(len(d["map_graph"]["edges"]), 1)
+        facts = d["facts_for_llm"]
+        self.assertGreaterEqual(len(facts["nodes"]), 2)
+        self.assertGreaterEqual(len(facts["transitions_observed"]), 1)
         self.assertEqual(d["task"], "demo nav task")
         self.assertTrue(d["current_location_id"].startswith("Node_"))
 
@@ -56,7 +105,7 @@ class TestTopoTextMap(unittest.TestCase):
         sys_p, usr_p = build_prompt_pair("demo nav task", facts)
         self.assertIn("JSON", sys_p)
         self.assertIn("step_sequence", usr_p)
-        ex = build_example_user_format()
+        ex = _demo_topo_text_map()
         raw = json.dumps(ex.to_dict(), ensure_ascii=False)
         back = parse_llm_topo_json("```json\n" + raw + "\n```")
         self.assertEqual(back.task, ex.task)

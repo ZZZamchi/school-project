@@ -18,7 +18,6 @@ from uav_search.topo_text_map.vision_topo_nav import (
     maybe_oob_mutate_and_return_action,
     nav_decision_bootstrap,
     set_nav_vert_intent,
-    vision_topo_nav_decide,
 )
 
 _vl_model: Any = None
@@ -29,7 +28,7 @@ APEX_VL_DEFAULT_HF_ID = "Qwen/Qwen3-VL-8B-Instruct"
 
 SYSTEM_PROMPT_ZH = """你是无人机导航智能体（APEX 风格管线）。
 你还会收到两类记忆：（1）文本拓扑 JSON；（2）与 PPO 训练时 ``map_input_preparation`` 同源的机体系局部地图摘要（attraction / obstacle / exploration 的 8 扇区统计与吸引峰值方位），对应论文中的体素语义-几何地图融合结果在策略输入侧的压缩视图。
-请结合第一视角 RGB：attraction 高的方向更可能靠近任务相关区域；obstacle 高的方向应规避。
+请结合第一视角 RGB：attraction 高的方向更可能靠近任务相关区域；obstacle 高的方向应规避；exploration 扇区均值较低的方向表示尚未充分覆盖，在吸引信号弱时应优先朝这些方向前进以扩大探索（除非 obstacle 很高）。
 除非必须对齐航向，否则优先选择前飞（action_id=0）；不要连续多步只输出转弯（1/2/3）而不前飞。
 必须只输出一个 JSON 对象，不要 Markdown 代码围栏，不要其它解释。
 Schema: {"action_id": <0-5 的整数>, "reason": "<一句中文理由>"}
@@ -244,24 +243,17 @@ def apex_vl_topo_nav_decide(
         action_id = _parse_action_id_from_text(raw)
     except Exception as e:
         vl_error = f"{type(e).__name__}: {e}"
+        raise RuntimeError(
+            "apex_vl: Qwen3-VL 推理失败；已禁用无 LLM 回退。请检查模型路径、transformers 版本与 GPU 显存。"
+            f" model_path={model_path!r} detail={vl_error}"
+        ) from e
 
     if action_id is None:
-        fb_action, fb_decision = vision_topo_nav_decide(
-            client,
-            topo_builder,
-            rgb,
-            grid_position,
-            task_text=task_text,
-            grid_margin=grid_margin,
-            map_context=map_context,
+        pe = vl_error or "unparseable_or_empty"
+        raise RuntimeError(
+            "apex_vl: VLM 输出无法解析为有效 action_id；已禁用无 LLM 回退。"
+            f" parse_error={pe!r} raw_preview={(raw[:800] if raw else '')!r}"
         )
-        fb_decision["apex_vl"] = {
-            "fallback": "vision_topo_nav",
-            "raw_model_output": raw[:2000] if raw else "",
-            "parse_error": vl_error or "unparseable_or_empty",
-            "model_path": model_path,
-        }
-        return fb_action, fb_decision
 
     decision["horizontal"]["phase"] = "apex_vl_json"
     decision["reason"] = f"Qwen3-VL 决策 action_id={action_id}"

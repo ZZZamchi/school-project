@@ -1,18 +1,18 @@
-"""机载 RGB + 拓扑前沿的离散航向决策（与 ``AirSimDroneEnv`` 动作空间一致）。"""
+"""与 ``AirSimDroneEnv`` 对齐的导航**安全壳**（OOB、姿态、防原地打转）及 Sobel 楔分工具。
+
+主决策须使用 ``apex_vl_nav.apex_vl_topo_nav_decide``（Qwen3-VL）；本文件不再提供无 LLM 的完整替代策略。
+"""
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 
 import numpy as np
 
-from uav_search.topo_text_map.builder import DIR_8
-from uav_search.topo_text_map.ego_map_context import fuse_wedge_scores_with_map_context
 from uav_search.topo_text_map.topo_nav_policy import (
     ORIENTATION_LABEL,
     _best_heading_idx_for_target,
     _yaw_deg_to_orientation_idx,
-    dir_label_to_bearing_deg,
 )
 
 
@@ -115,10 +115,28 @@ def maybe_oob_mutate_and_return_action(
     gz = float(grid_position[2])
     if gx < grid_margin or gx > 40.0 - grid_margin - 1 or gy < grid_margin or gy > 40.0 - grid_margin - 1:
         decision["horizontal"]["phase"] = "avoid_oob_turn"
-        decision["reason"] = "栅格 XY 近边界，左转避免前飞越界"
         set_nav_vert_intent(decision, "none")
-        decision["topo_map"] = {"mode": "oob_turn"}
-        return 1
+        # 朝栅格中心 (20,20) 转向，减少「固定左转」在边界附近来回摆动，便于沿边界探索
+        dx_c = 20.0 - gx
+        dy_c = 20.0 - gy
+        tgt_hidx = _best_heading_idx_for_target(dx_c, dy_c)
+        fl = decision.get("flight") or {}
+        cur_idx = fl.get("orientation_idx")
+        if cur_idx is None:
+            action_oob = 1
+        else:
+            cw = (tgt_hidx - int(cur_idx)) % 4
+            ccw = (int(cur_idx) - tgt_hidx) % 4
+            action_oob = 1 if cw <= ccw else 2
+        decision["reason"] = (
+            f"栅格 XY 近边界，转向朝向中心(20,20)（目标航向 idx {tgt_hidx}，当前 {cur_idx}）"
+        )
+        decision["topo_map"] = {
+            "mode": "oob_turn_center_seek",
+            "grid_center_dx_dy": [round(dx_c, 2), round(dy_c, 2)],
+            "target_orientation_idx": int(tgt_hidx),
+        }
+        return action_oob
     if gz <= 0.5 or gz >= 8.5:
         decision["horizontal"]["phase"] = "hold"
         if gz <= 0.5:
@@ -144,7 +162,7 @@ def apply_yaw_spin_guard(
         return action_int, decision
     tm = decision.get("topo_map") or {}
     mode = tm.get("mode")
-    if mode in ("oob_turn", "z_shell"):
+    if mode in ("oob_turn", "oob_turn_center_seek", "z_shell"):
         sg["yaw_only_streak"] = 0
         sg["same_frontier_align_streak"] = 0
         sg["last_chosen_frontier"] = None
@@ -173,85 +191,3 @@ def apply_yaw_spin_guard(
         sg["yaw_only_streak"] = 0
         sg["same_frontier_align_streak"] = 0
     return action_int, decision
-
-
-def vision_topo_nav_decide(
-    client: Any,
-    topo_builder: Any,
-    rgb: np.ndarray,
-    grid_position: np.ndarray | None,
-    task_text: str = "",
-    grid_margin: float = 3.0,
-    map_context: Dict[str, Any] | None = None,
-) -> Tuple[int, Dict[str, Any]]:
-    decision, yaw_deg, bearing_forward, cur_idx = nav_decision_bootstrap(client)
-
-    oob_action = maybe_oob_mutate_and_return_action(decision, grid_position, grid_margin)
-    if oob_action is not None:
-        return oob_action, decision
-
-    set_nav_vert_intent(decision, "none")
-
-    wedge_scores_raw = score_wedges_from_rgb(rgb, task_text)
-    wedge_scores, fusion_meta = fuse_wedge_scores_with_map_context(wedge_scores_raw, map_context)
-    facts = topo_builder.facts_for_llm()
-    unexplored: List[str] = list(facts.get("unexplored_directions_from_current_node") or [])
-    if not unexplored:
-        unexplored = list(DIR_8)
-
-    best_f: str | None = None
-    best_s = -1.0
-    per_frontier: List[Dict[str, Any]] = []
-    for f in unexplored:
-        fb = dir_label_to_bearing_deg(f)
-        widx = _body_wedge_idx_for_world_bearing(fb, bearing_forward)
-        s = float(wedge_scores[widx])
-        per_frontier.append(
-            {
-                "frontier": f,
-                "world_bearing_deg": round(fb, 2),
-                "body_wedge": int(widx),
-                "vision_score": round(s, 4),
-            }
-        )
-        if s > best_s:
-            best_s = s
-            best_f = f
-
-    if best_f is None:
-        best_f = unexplored[0]
-
-    fb_chosen = dir_label_to_bearing_deg(best_f)
-    rad = math.radians(fb_chosen)
-    tgt_hidx = _best_heading_idx_for_target(math.cos(rad), math.sin(rad))
-
-    decision["topo_map"] = {
-        "mode": "vision_frontier",
-        "current_node_id": facts.get("current_node_id"),
-        "unexplored_directions": unexplored,
-        "chosen_frontier": best_f,
-        "chosen_frontier_bearing_deg": round(fb_chosen, 2),
-        "aligned_heading_idx": int(tgt_hidx),
-        "per_frontier_scores": per_frontier,
-    }
-    decision["vision"] = {
-        "wedge_scores": [round(float(wedge_scores[i]), 4) for i in range(8)],
-        "wedge_scores_sobel_only": [round(float(wedge_scores_raw[i]), 4) for i in range(8)],
-        "map_fusion": fusion_meta,
-    }
-    if map_context is not None:
-        decision["grid_maps"] = {"ego_summary_for_policy": map_context}
-    decision["horizontal"]["orientation_idx"] = cur_idx
-    decision["horizontal"]["desired_heading_idx"] = tgt_hidx
-
-    if cur_idx != tgt_hidx:
-        cw = (tgt_hidx - cur_idx) % 4
-        ccw = (cur_idx - tgt_hidx) % 4
-        decision["horizontal"]["phase"] = "align_heading_vision_frontier"
-        decision["reason"] = f"视觉+拓扑：对齐前沿「{best_f}」（机头 idx {cur_idx}→{tgt_hidx}）"
-        action_int = 1 if cw <= ccw else 2
-    else:
-        decision["horizontal"]["phase"] = "forward_vision_frontier"
-        decision["reason"] = f"已对准所选前沿方向，前飞（{best_f}）"
-        action_int = 0
-    return apply_yaw_spin_guard(topo_builder, action_int, decision)
